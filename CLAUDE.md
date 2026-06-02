@@ -1,4 +1,4 @@
-# singing-enhancement
+# cantus
 
 A singing practice web app: search any song, transpose to your vocal range, hear an instrumental (vocals removed), and get real-time pitch feedback while you sing.
 
@@ -84,7 +84,7 @@ Three-stage pipeline — users iterate on the fast preview, then commit to the s
 
 ## Go Module
 
-Module path: `singing-enhancement/backend`
+Module path: `cantus/backend`
 
 ## Important Notes
 

@@ -1,6 +1,6 @@
 # Task Tracker
 
-Full task breakdown for the singing-enhancement project. Work through groups in order — each group should be fully functional before starting the next.
+Full task breakdown for the cantus project. Work through groups in order — each group should be fully functional before starting the next.
 
 Check off tasks as you complete them. When starting a Claude Code session, tell Claude which group you're working on.
 
@@ -27,13 +27,14 @@ Users iterate on the **30s preview** (fast, ~1-2s per key) to find the right key
 - [x] Scaffold directory structure (backend/, audio-processor/, frontend/)
 - [x] Create per-service .env.example files (backend/ and audio-processor/)
 - [x] Update .gitignore
-- [ ] Set up pre-commit framework: create `.pre-commit-config.yaml`, run `pre-commit install`
-- [ ] Install linting tools: `brew install golangci-lint`, `pip install ruff black pre-commit`, `npm i -D eslint prettier` (in frontend/)
-- [ ] `brew install yt-dlp ffmpeg` (prerequisite for backend + audio processor)
+- [x] Set up pre-commit framework: create `.pre-commit-config.yaml`, run `pre-commit install`
+- [x] Install Go linting: `brew install golangci-lint` (ruff/black managed by pre-commit — no separate install needed)
+- [ ] `npm i -D eslint prettier` in frontend/ (deferred to Group 8 when Vue project exists)
+- [x] `brew install yt-dlp ffmpeg` (prerequisite for backend + audio processor)
 - [x] Remove Spotify references from CLAUDE.md and .env.example (Spotify was dropped)
 
 ## Group 2 — Go Backend Foundation
-- [ ] Initialize Go module (`go mod init singing-enhancement/backend`)
+- [ ] Initialize Go module (`go mod init cantus/backend`)
 - [ ] Chi router with CORS middleware (env-configurable origins) and /health endpoint
 - [ ] Config loading from .env (`os.Getenv`, fail-fast on missing required vars)
 - [ ] Models: SearchResult, Job, JobStatus, ProcessRequest
