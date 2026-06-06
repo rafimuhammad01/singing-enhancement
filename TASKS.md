@@ -43,35 +43,48 @@ Users iterate on the **30s preview** (fast, ~1-2s per key) to find the right key
 - [x] Storage interface + LocalDiskStorage (`services/storage.go`): LocalPath/Has/Commit/Open, TTL-aware cleanup goroutine + empty `{videoID}/` dir pruning
 - [x] Structured logging (zerolog) + request-id middleware (`logger/logger.go`): `LOG_LEVEL` config, `X-Request-ID` response header, request-scoped logger via `FromCtx`
 
-## Group 3 — YouTube Search + Preview Download
-- [ ] `YouTubeService.Search(query)` — yt-dlp `--dump-json --flat-playlist ytsearch10:` → `[]SearchResult`
-- [ ] `YouTubeService.DownloadPreview(videoId)` — yt-dlp `--download-sections "*0-30"` → 30s MP3 cached at `tmp/cache/{video_id}/preview.mp3`
-- [ ] Video ID validator: regex `^[A-Za-z0-9_-]{11}$`
-- [ ] `GET /api/songs/search?q=` handler
-- [ ] `GET /api/preview/:videoId` handler (serves cached preview.mp3)
-- [ ] Manual test: search + preview a known song
+## Group 3 — Python Microservice Foundation + Song Search
+Reordered ahead of the Go search/preview group because the Go `/api/songs/search` handler proxies through Python's `ytmusicapi` — Python must exist first.
+- [ ] FastAPI app skeleton with `/health` endpoint
+- [ ] Create venv and install runtime deps in `audio-processor/.venv/`:
+  ```bash
+  cd audio-processor
+  python3 -m venv .venv
+  source .venv/bin/activate
+  pip install fastapi uvicorn ytmusicapi cachetools demucs crepe librosa pyrubberband soundfile python-multipart python-json-logger
+  pip freeze > requirements.txt
+  ```
+  (First run downloads PyTorch + Demucs model weights — allow 5-10 min)
+- [ ] Structured JSON logging setup (python-json-logger)
+- [ ] `services/ytmusic_service.py` — thin `YTMusic().search(query, filter="songs", limit=10)` wrapper. Map raw items → `{videoId, title, artist, album, duration_sec, thumbnail_url}`. Skip entries missing `videoId`.
+- [ ] `routers/search.py` — `POST /search { query, limit }` returning the mapped list. 10-min in-memory LRU cache.
+- [ ] Manual test: `curl localhost:8090/health` and `curl -X POST localhost:8090/search -d '{"query":"wish you were here","limit":10}'` — verify 3 distinct songs (Pink Floyd, Neck Deep, Avril Lavigne).
 
-## Group 4 — Python Microservice (Foundation)
-- [ ] FastAPI app with `/health` endpoint
-- [ ] Install Python deps: `fastapi uvicorn demucs crepe librosa pyrubberband soundfile python-json-logger`
-- [ ] Structured JSON logging setup
-- [ ] Manual test: `curl localhost:8090/health`
+## Group 4 — Go Search + Preview Download
+- [ ] `YouTubeService.Search(query)` — HTTP POST `python:8090/search`, then HMAC-sign each `videoId` and attach `sig` to each result.
+- [ ] `YouTubeService.DownloadPreview(videoId)` — `yt-dlp --download-sections "*0-30"` → 30s MP3 written through Storage interface to `{video_id}/preview.mp3`.
+- [ ] Video ID validator: regex `^[A-Za-z0-9_-]{11}$` — runs on every videoId received by ANY handler.
+- [ ] `GET /api/songs/search?q=` handler — returns `[]SearchResult` with sig field.
+- [ ] `GET /api/preview/:videoId?sig=...` handler — validates sig BEFORE any work; 400 on mismatch. Serves cached preview.mp3 or triggers DownloadPreview on miss.
+- [ ] Manual test: search → pick a result → preview with valid sig works; preview with tampered sig (or no sig) returns 400.
 
 ## Group 5 — Preview Pitch Shift (fast iteration loop)
-- [ ] `POST /api/preview-shift` { video_id, semitones } handler
-- [ ] Cache lookup: serve `tmp/cache/{video_id}/preview-shifts/{semitones}.mp3` if exists
-- [ ] On cache miss: ensure preview.mp3 exists, call Python `/shift` on it
+- [ ] `POST /api/preview-shift` `{ video_id, sig, semitones }` handler — validate sig FIRST, then proceed
+- [ ] Cache lookup via Storage: serve `{video_id}/preview-shifts/{semitones}.mp3` if `Has()` true
+- [ ] On cache miss: ensure preview.mp3 exists (call DownloadPreview if not), then call Python `/shift` on preview.mp3
 - [ ] Validate semitones range (-5 to +5)
 - [ ] Manual test: preview-shift through several semitones, verify ~1-2s response
 
-## Group 6 — Python Audio Pipeline (three endpoints)
+## Group 6 — Python Audio Pipeline (heavy endpoints)
+Foundation, deps, and JSON logging already done in Group 3.
 - [ ] `pitch_service.py` — librosa + pyrubberband + ffmpeg → 128kbps MP3 (shared for preview and full song)
 - [ ] `demucs_service.py` — `--two-stems vocals` → vocals.wav + no_vocals.wav
 - [ ] `melody_service.py` — CREPE on **vocals.wav** (isolated), outputs melody.json (array tuple format, 30ms hop, min_hz/max_hz, original key)
-- [ ] `POST /shift` endpoint (light)
-- [ ] `POST /separate` endpoint (heavy)
-- [ ] `POST /melody` endpoint (heavy)
+- [ ] `POST /shift` endpoint — input_path + semitones + output_path; idempotent if output exists
+- [ ] `POST /separate` endpoint — input_path + output_dir; idempotent
+- [ ] `POST /melody` endpoint — vocals_path + output_path; idempotent
 - [ ] Stage timing logs via python-json-logger
+- [ ] Manual test: shift a 30s clip, then run separate + melody on a full song, verify outputs
 
 ## Group 7 — Generate Pipeline + SSE + Stem Cache
 - [ ] `ProcessorClient` in Go: `Shift(in, semitones, out)`, `Separate(in, outDir)`, `Melody(vocals, out)` methods
