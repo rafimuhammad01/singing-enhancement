@@ -1,17 +1,24 @@
 package api_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"cantus/backend/api"
+	"cantus/backend/logger"
 )
 
 func TestRouter_Health(t *testing.T) {
-	router := api.NewRouter([]string{"http://localhost:5173"})
+	log, err := logger.New(io.Discard, "info")
+	if err != nil {
+		t.Fatalf("logger.New: %v", err)
+	}
+	router := api.NewRouter([]string{"http://localhost:5173"}, log)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -37,7 +44,11 @@ func TestRouter_Health(t *testing.T) {
 }
 
 func TestRouter_CORS_AllowedOrigin(t *testing.T) {
-	router := api.NewRouter([]string{"http://localhost:5173"})
+	log, err := logger.New(io.Discard, "info")
+	if err != nil {
+		t.Fatalf("logger.New: %v", err)
+	}
+	router := api.NewRouter([]string{"http://localhost:5173"}, log)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	req.Header.Set("Origin", "http://localhost:5173")
@@ -54,7 +65,11 @@ func TestRouter_CORS_AllowedOrigin(t *testing.T) {
 }
 
 func TestRouter_CORS_DisallowedOrigin(t *testing.T) {
-	router := api.NewRouter([]string{"http://localhost:5173"})
+	log, err := logger.New(io.Discard, "info")
+	if err != nil {
+		t.Fatalf("logger.New: %v", err)
+	}
+	router := api.NewRouter([]string{"http://localhost:5173"}, log)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	req.Header.Set("Origin", "http://evil.com")
@@ -71,7 +86,11 @@ func TestRouter_CORS_DisallowedOrigin(t *testing.T) {
 }
 
 func TestRouter_CORS_Preflight(t *testing.T) {
-	router := api.NewRouter([]string{"http://localhost:5173"})
+	log, err := logger.New(io.Discard, "info")
+	if err != nil {
+		t.Fatalf("logger.New: %v", err)
+	}
+	router := api.NewRouter([]string{"http://localhost:5173"}, log)
 
 	req := httptest.NewRequest(http.MethodOptions, "/health", nil)
 	req.Header.Set("Origin", "http://localhost:5173")
@@ -91,5 +110,101 @@ func TestRouter_CORS_Preflight(t *testing.T) {
 		t.Errorf("Access-Control-Allow-Methods: got empty string, want non-empty")
 	} else if !strings.Contains(h, "GET") {
 		t.Errorf("Access-Control-Allow-Methods: got %q, want it to contain GET", h)
+	}
+}
+
+// TestRouter_SetsRequestIDHeader verifies that the logger middleware sets the
+// X-Request-ID response header on every request.
+func TestRouter_SetsRequestIDHeader(t *testing.T) {
+	tests := []struct {
+		name string
+	}{
+		{name: "X-Request-ID header set on response"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log, err := logger.New(io.Discard, "info")
+			if err != nil {
+				t.Fatalf("logger.New: %v", err)
+			}
+			router := api.NewRouter([]string{"http://localhost:5173"}, log)
+
+			req := httptest.NewRequest(http.MethodGet, "/health", nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if id := rec.Header().Get("X-Request-ID"); id == "" {
+				t.Errorf("X-Request-ID header: got empty string, want non-empty request ID")
+			}
+		})
+	}
+}
+
+// TestRouter_LogsRequest verifies that the logger middleware emits a JSON log
+// line per request containing method, path, status, duration_ms, and
+// request_id fields.
+func TestRouter_LogsRequest(t *testing.T) {
+	tests := []struct {
+		name string
+	}{
+		{name: "request line logged with method path status request_id"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			log, err := logger.New(&buf, "info")
+			if err != nil {
+				t.Fatalf("logger.New: %v", err)
+			}
+			router := api.NewRouter([]string{"http://localhost:5173"}, log)
+
+			req := httptest.NewRequest(http.MethodGet, "/health", nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			// Scan log lines for the request entry.
+			output := buf.String()
+			lines := strings.Split(strings.TrimSpace(output), "\n")
+
+			found := false
+			for _, line := range lines {
+				if line == "" {
+					continue
+				}
+				var entry map[string]interface{}
+				if err := json.Unmarshal([]byte(line), &entry); err != nil {
+					continue
+				}
+
+				method, hasMethod := entry["method"]
+				path, hasPath := entry["path"]
+				_, hasStatus := entry["status"]
+				_, hasDuration := entry["duration_ms"]
+				requestID, hasRequestID := entry["request_id"]
+
+				if !hasMethod || !hasPath || !hasStatus || !hasDuration || !hasRequestID {
+					continue
+				}
+				if method != "GET" || path != "/health" {
+					continue
+				}
+				statusVal, ok := entry["status"].(float64)
+				if !ok || int(statusVal) != http.StatusOK {
+					continue
+				}
+				if rid, ok := requestID.(string); !ok || rid == "" {
+					continue
+				}
+
+				found = true
+				break
+			}
+
+			if !found {
+				t.Fatalf("no log entry with method=GET path=/health status=200 duration_ms request_id found.\nBuffer contents:\n%s", output)
+			}
+		})
 	}
 }

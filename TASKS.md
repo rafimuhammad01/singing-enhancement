@@ -37,11 +37,11 @@ Users iterate on the **30s preview** (fast, ~1-2s per key) to find the right key
 - [x] Initialize Go module (`go mod init cantus/backend`)
 - [x] Chi router with CORS middleware (env-configurable origins) and /health endpoint
 - [x] Config loading from .env (`os.Getenv`, fail-fast on missing required vars)
-- [ ] Models: SearchResult, Job, JobStatus, ProcessRequest
-- [ ] HMAC signing helpers (`services/sign.go`): sign/validSig with constant-time compare, key loaded from config
-- [ ] JobStore service (in-memory map + `sync.RWMutex` + 1hr cleanup goroutine — for job records, not cache files)
-- [ ] Storage interface + LocalDiskStorage (`services/storage.go`): LocalPath/Has/Commit/Open, TTL-aware cleanup goroutine
-- [ ] Structured logging setup with zerolog, request-id middleware
+- [x] Models: SearchResult, Job, JobStatus, ProcessRequest
+- [x] HMAC signing helpers (`services/sign.go`): Signer.Sign/Valid with `hmac.Equal` constant-time compare, hex-decode rejects non-hex input
+- [x] JobStore service (`services/job_store.go`): in-memory map + `sync.RWMutex` + TTL cleanup goroutine (record TTL, not cache files)
+- [x] Storage interface + LocalDiskStorage (`services/storage.go`): LocalPath/Has/Commit/Open, TTL-aware cleanup goroutine + empty `{videoID}/` dir pruning
+- [x] Structured logging (zerolog) + request-id middleware (`logger/logger.go`): `LOG_LEVEL` config, `X-Request-ID` response header, request-scoped logger via `FromCtx`
 
 ## Group 3 — YouTube Search + Preview Download
 - [ ] `YouTubeService.Search(query)` — yt-dlp `--dump-json --flat-playlist ytsearch10:` → `[]SearchResult`

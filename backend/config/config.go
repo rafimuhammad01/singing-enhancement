@@ -21,13 +21,28 @@ type Config struct {
 	AllowedOrigins          string // ALLOWED_ORIGINS, default "http://localhost:5173"
 	Port                    int    // PORT, default 8080
 	VideoIDSigningKey       string // VIDEO_ID_SIGNING_KEY, required, >= 32 chars
+	LogLevel                string // LOG_LEVEL, one of debug/info/warn/error, default "info"
 }
 
 // Load reads environment variables and returns a validated Config.
 // Returns an error if VIDEO_ID_SIGNING_KEY is missing or shorter than 32
-// characters, or if any integer-typed variable cannot be parsed.
+// characters, LOG_LEVEL is not one of debug/info/warn/error, or if any
+// integer-typed variable cannot be parsed.
 func Load() (*Config, error) {
 	cfg := &Config{}
+
+	// LOG_LEVEL: optional, strict allowlist, default "info".
+	logLevel := os.Getenv("LOG_LEVEL")
+	if logLevel == "" {
+		logLevel = "info"
+	}
+	switch logLevel {
+	case "debug", "info", "warn", "error":
+		// valid
+	default:
+		return nil, fmt.Errorf("LOG_LEVEL: %q is not one of debug/info/warn/error", logLevel)
+	}
+	cfg.LogLevel = logLevel
 
 	// String fields with defaults.
 	cfg.PythonProcessorURL = getEnvString("PYTHON_PROCESSOR_URL", "http://localhost:8090")

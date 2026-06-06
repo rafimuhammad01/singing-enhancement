@@ -96,6 +96,87 @@ func TestLoad_HappyPath_AllExplicit(t *testing.T) {
 	}
 }
 
+// TestLoad_LogLevel verifies that the LogLevel field is populated from LOG_LEVEL,
+// defaults to "info" when unset, and rejects values outside the allowed set.
+func TestLoad_LogLevel(t *testing.T) {
+	validKey := strings.Repeat("a", 32)
+
+	tests := []struct {
+		name          string
+		env           string
+		wantLevel     string
+		wantErr       bool
+		wantErrSubstr string
+	}{
+		{
+			name:      "default when LOG_LEVEL unset",
+			env:       "",
+			wantLevel: "info",
+			wantErr:   false,
+		},
+		{
+			name:      "explicit debug",
+			env:       "debug",
+			wantLevel: "debug",
+			wantErr:   false,
+		},
+		{
+			name:      "explicit info",
+			env:       "info",
+			wantLevel: "info",
+			wantErr:   false,
+		},
+		{
+			name:      "explicit warn",
+			env:       "warn",
+			wantLevel: "warn",
+			wantErr:   false,
+		},
+		{
+			name:      "explicit error",
+			env:       "error",
+			wantLevel: "error",
+			wantErr:   false,
+		},
+		{
+			name:          "invalid value rejected",
+			env:           "trace",
+			wantErr:       true,
+			wantErrSubstr: "LOG_LEVEL",
+		},
+		{
+			name:          "uppercase rejected (strict)",
+			env:           "INFO",
+			wantErr:       true,
+			wantErrSubstr: "LOG_LEVEL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("VIDEO_ID_SIGNING_KEY", validKey)
+			t.Setenv("LOG_LEVEL", tt.env)
+
+			cfg, err := config.Load()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("Load() returned nil error; want error containing %q", tt.wantErrSubstr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErrSubstr) {
+					t.Errorf("error %q should contain %q", err.Error(), tt.wantErrSubstr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() returned unexpected error: %v", err)
+			}
+			if cfg.LogLevel != tt.wantLevel {
+				t.Errorf("LogLevel: got %q, want %q", cfg.LogLevel, tt.wantLevel)
+			}
+		})
+	}
+}
+
 // TestLoad_ErrorCases is a table-driven test covering all validation failures.
 func TestLoad_ErrorCases(t *testing.T) {
 	validKey := strings.Repeat("a", 32)
