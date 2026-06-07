@@ -45,20 +45,12 @@ Users iterate on the **30s preview** (fast, ~1-2s per key) to find the right key
 
 ## Group 3 — Python Microservice Foundation + Song Search
 Reordered ahead of the Go search/preview group because the Go `/api/songs/search` handler proxies through Python's `ytmusicapi` — Python must exist first.
-- [ ] FastAPI app skeleton with `/health` endpoint
-- [ ] Create venv and install runtime deps in `audio-processor/.venv/`:
-  ```bash
-  cd audio-processor
-  python3 -m venv .venv
-  source .venv/bin/activate
-  pip install fastapi uvicorn ytmusicapi cachetools demucs crepe librosa pyrubberband soundfile python-multipart python-json-logger
-  pip freeze > requirements.txt
-  ```
-  (First run downloads PyTorch + Demucs model weights — allow 5-10 min)
-- [ ] Structured JSON logging setup (python-json-logger)
-- [ ] `services/ytmusic_service.py` — thin `YTMusic().search(query, filter="songs", limit=10)` wrapper. Map raw items → `{videoId, title, artist, album, duration_sec, thumbnail_url}`. Skip entries missing `videoId`.
-- [ ] `routers/search.py` — `POST /search { query, limit }` returning the mapped list. 10-min in-memory LRU cache.
-- [ ] Manual test: `curl localhost:8090/health` and `curl -X POST localhost:8090/search -d '{"query":"wish you were here","limit":10}'` — verify 3 distinct songs (Pink Floyd, Neck Deep, Avril Lavigne).
+- [x] FastAPI app skeleton with `/health` endpoint
+- [x] Create venv (`audio-processor/.venv/`) + `pyproject.toml` (ruff + pytest) + `requirements.txt` (Group 3 deps pinned; heavy ML deps deferred to Group 6)
+- [x] Structured JSON logging via `logging_config.setup_logging()` using `pythonjsonlogger.json.JsonFormatter`
+- [x] `services/ytmusic_service.py` — `SearchService` wraps `YTMusic.search(query, filter="songs", limit=N)`, maps raw → `{videoId, title, artist, album, duration_sec, thumbnail_url}`, skips entries missing `videoId`, TTLCache(maxsize=256, ttl=600), trims `mapped[:limit]` to defend against ytmusicapi v1.12.1 ignoring `limit`
+- [x] `routers/search.py` — `POST /search { query, limit }`, pydantic v2 validation (query 1-200 chars, limit 1-20), `Annotated[SearchService, Depends(get_search_service)]` DI pattern (overridable via `app.dependency_overrides` in tests)
+- [x] Manual integration test: `/health` returns `{"status":"ok"}`, `/search` with `query="wish you were here"` returns Pink Floyd / Neck Deep / Avril Lavigne in the top results, exactly `limit` entries returned
 
 ## Group 4 — Go Search + Preview Download
 - [ ] `YouTubeService.Search(query)` — HTTP POST `python:8090/search`, then HMAC-sign each `videoId` and attach `sig` to each result.
