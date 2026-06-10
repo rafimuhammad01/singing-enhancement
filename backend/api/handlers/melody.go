@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"math"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -13,12 +15,65 @@ import (
 	"cantus/backend/services"
 )
 
+// noteNames is the canonical 12-note chromatic wheel used for key transposition.
+var noteNames = []string{"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"}
+
+// transposeKey applies a semitone shift to a key string of the form
+// "<NOTE> <major|minor>". Returns "" if key is empty or malformed.
+// The double-mod handles negative semitones correctly in Go, where % can be negative.
+func transposeKey(key string, semitones int) string {
+	if key == "" {
+		return ""
+	}
+	parts := strings.SplitN(key, " ", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	idx := -1
+	for i, n := range noteNames {
+		if n == parts[0] {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return ""
+	}
+	newIdx := ((idx+semitones)%12 + 12) % 12
+	return noteNames[newIdx] + " " + parts[1]
+}
+
+// loadPreviewKey returns the cached preview-key value for videoID, or "" if absent or malformed.
+func loadPreviewKey(ctx context.Context, storage services.Storage, videoID string) string {
+	ok, err := storage.Has(ctx, videoID, "preview-key.json")
+	if err != nil || !ok {
+		return ""
+	}
+	path, err := storage.LocalPath(ctx, videoID, "preview-key.json")
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var pk struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(data, &pk); err != nil {
+		return ""
+	}
+	return pk.Key
+}
+
 // melodyJSON is the on-disk and on-wire shape of a melody payload.
 type melodyJSON struct {
-	HopMs  int          `json:"hop_ms"`
-	MinHz  float64      `json:"min_hz"`
-	MaxHz  float64      `json:"max_hz"`
-	Frames [][2]float64 `json:"frames"`
+	HopMs         int          `json:"hop_ms"`
+	MinHz         float64      `json:"min_hz"`
+	MaxHz         float64      `json:"max_hz"`
+	Key           string       `json:"key"`
+	TransposedKey string       `json:"transposed_key"`
+	Frames        [][2]float64 `json:"frames"`
 }
 
 // Melody returns an http.HandlerFunc that serves a math-transposed melody.json.
@@ -83,13 +138,25 @@ func Melody(signer *services.Signer, storage services.Storage) http.HandlerFunc 
 			return
 		}
 
+		// Override key with preview-key.json when present so the UI shows the
+		// same key in both /preview and /play views. The preview-key detector
+		// (chroma on full mix) and the melody detector (Krumhansl on isolated
+		// vocals) can disagree on enharmonic equivalents (e.g. F major vs A minor);
+		// preview computes first and the user sees it first, so it wins.
+		key := payload.Key
+		if previewKey := loadPreviewKey(ctx, storage, videoID); previewKey != "" {
+			key = previewKey
+		}
+
 		ratio := math.Pow(2, float64(semitones)/12)
 
 		out := melodyJSON{
-			HopMs:  payload.HopMs,
-			MinHz:  payload.MinHz * ratio,
-			MaxHz:  payload.MaxHz * ratio,
-			Frames: make([][2]float64, len(payload.Frames)),
+			HopMs:         payload.HopMs,
+			MinHz:         payload.MinHz * ratio,
+			MaxHz:         payload.MaxHz * ratio,
+			Key:           key,
+			TransposedKey: transposeKey(key, semitones),
+			Frames:        make([][2]float64, len(payload.Frames)),
 		}
 
 		for i, frame := range payload.Frames {

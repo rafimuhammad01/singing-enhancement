@@ -460,6 +460,144 @@ func TestPythonProcessorClient_Melody_ContextCanceled(t *testing.T) {
 	}
 }
 
+func TestPythonProcessorClient_PreviewKey(t *testing.T) {
+	tests := []struct {
+		name        string
+		inputPath   string
+		transport   roundTripperFunc
+		wantErr     bool
+		errContains string
+		wantKey     string
+	}{
+		{
+			name:      "happy path returns key",
+			inputPath: "/audio/preview.mp3",
+			transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				if r.Method != http.MethodPost {
+					t.Errorf("method: got %q, want POST", r.Method)
+				}
+				if r.URL.Path != "/preview-key" {
+					t.Errorf("path: got %q, want /preview-key", r.URL.Path)
+				}
+				if ct := r.Header.Get("Content-Type"); !strings.Contains(ct, "application/json") {
+					t.Errorf("Content-Type: got %q, want application/json", ct)
+				}
+				var body struct {
+					InputPath string `json:"input_path"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode request body: %v", err)
+				}
+				if body.InputPath != "/audio/preview.mp3" {
+					t.Errorf("input_path: got %q, want %q", body.InputPath, "/audio/preview.mp3")
+				}
+				return makeResponse(http.StatusOK, `{"key":"A major"}`), nil
+			}),
+			wantErr: false,
+			wantKey: "A major",
+		},
+		{
+			name:      "happy path empty key",
+			inputPath: "/audio/silent.mp3",
+			transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return makeResponse(http.StatusOK, `{"key":""}`), nil
+			}),
+			wantErr: false,
+			wantKey: "",
+		},
+		{
+			name:      "upstream 404 input missing",
+			inputPath: "/missing/preview.mp3",
+			transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return makeResponse(http.StatusNotFound, `{"detail":"input_path not found"}`), nil
+			}),
+			wantErr:     true,
+			errContains: "404",
+		},
+		{
+			name:      "upstream 500 processing failure",
+			inputPath: "/tmp/preview.mp3",
+			transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return makeResponse(http.StatusInternalServerError, `{"detail":"processing failed"}`), nil
+			}),
+			wantErr:     true,
+			errContains: "500",
+		},
+		{
+			name:      "malformed JSON in 2xx response",
+			inputPath: "/tmp/preview.mp3",
+			transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return makeResponse(http.StatusOK, "not json"), nil
+			}),
+			wantErr: true,
+		},
+		{
+			name:      "network error",
+			inputPath: "/tmp/preview.mp3",
+			transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return nil, errors.New("net down")
+			}),
+			wantErr:     true,
+			errContains: "net down",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &http.Client{Transport: tt.transport}
+			proc := services.NewPythonProcessorClient("http://localhost:8090", client)
+
+			key, err := proc.PreviewKey(context.Background(), tt.inputPath)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("PreviewKey: got nil error, want error")
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.errContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("PreviewKey: unexpected error: %v", err)
+			}
+			if key != tt.wantKey {
+				t.Errorf("key: got %q, want %q", key, tt.wantKey)
+			}
+		})
+	}
+}
+
+func TestPythonProcessorClient_PreviewKey_ContextCanceled(t *testing.T) {
+	tests := []struct {
+		name string
+	}{
+		{name: "canceled context returns context.Canceled"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return makeResponse(http.StatusOK, `{"key":"C major"}`), nil
+			})
+			client := &http.Client{Transport: transport}
+			proc := services.NewPythonProcessorClient("http://localhost:8090", client)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			_, err := proc.PreviewKey(ctx, "/audio/preview.mp3")
+			if err == nil {
+				t.Fatalf("PreviewKey with canceled ctx: got nil error, want error")
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("error %v: expected errors.Is(err, context.Canceled) to be true", err)
+			}
+		})
+	}
+}
+
 func TestPythonProcessorClient_Shift_ContextCanceled(t *testing.T) {
 	tests := []struct {
 		name string

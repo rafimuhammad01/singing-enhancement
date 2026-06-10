@@ -13,6 +13,7 @@ type ProcessorClient interface {
 	Shift(ctx context.Context, inputPath, outputPath string, semitones float64) error
 	Separate(ctx context.Context, inputPath, outputDir string) (vocalsPath, noVocalsPath string, err error)
 	Melody(ctx context.Context, vocalsPath, outputPath string) error
+	PreviewKey(ctx context.Context, inputPath string) (string, error)
 }
 
 // separateResponse is the JSON body returned by the Python /separate endpoint.
@@ -109,6 +110,11 @@ func (p *PythonProcessorClient) Separate(ctx context.Context, inputPath, outputD
 	return result.VocalsPath, result.NoVocalsPath, nil
 }
 
+// previewKeyResponse is the JSON body returned by the Python /preview-key endpoint.
+type previewKeyResponse struct {
+	Key string `json:"key"`
+}
+
 // Melody calls the Python /melody endpoint to extract pitch data from vocalsPath and write it to outputPath.
 func (p *PythonProcessorClient) Melody(ctx context.Context, vocalsPath, outputPath string) error {
 	if err := ctx.Err(); err != nil {
@@ -140,4 +146,42 @@ func (p *PythonProcessorClient) Melody(ctx context.Context, vocalsPath, outputPa
 	}
 
 	return nil
+}
+
+// PreviewKey calls the Python /preview-key endpoint to estimate the musical key of the audio at inputPath.
+// Returns the key string (e.g. "A major") or "" for silent input.
+func (p *PythonProcessorClient) PreviewKey(ctx context.Context, inputPath string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("processor preview-key: %w", err)
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"input_path": inputPath,
+	})
+	if err != nil {
+		return "", fmt.Errorf("processor preview-key: marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/preview-key", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("processor preview-key: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("processor preview-key: do request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("processor preview-key: upstream status %d", resp.StatusCode)
+	}
+
+	var result previewKeyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("processor preview-key: decode response: %w", err)
+	}
+
+	return result.Key, nil
 }

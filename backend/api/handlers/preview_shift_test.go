@@ -47,6 +47,8 @@ func (f *fakeProcessor) Shift(_ context.Context, inputPath, outputPath string, s
 	return nil
 }
 
+func (f *fakeProcessor) PreviewKey(_ context.Context, _ string) (string, error) { return "", nil }
+
 // fakeYouTubeShift is a test double for services.YouTubeService, used in preview_shift tests.
 // DownloadPreview optionally calls onDownload to simulate writing the preview file.
 type fakeYouTubeShift struct {

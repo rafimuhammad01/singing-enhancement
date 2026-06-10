@@ -91,48 +91,50 @@ Foundation, deps, and JSON logging already done in Group 3. `pitch_service.py` +
 - [ ] **§6 sanity check** (decision lock-in for the math-transpose architecture): on the same song, compute `voiced_set_A` (prototype path: shift vocals → CREPE+RMS on shifted) and `voiced_set_B` (plan path: CREPE+RMS on original, transpose Hz at serve). If frame-level agreement is >95%, commit to math-transpose. Otherwise re-evaluate before Group 7. *(Run this before Group 7's transpose endpoint.)*
 
 ## Group 7 — Generate Pipeline + SSE + Stem Cache
-- [ ] `ProcessorClient` in Go: `Shift(in, semitones, out)`, `Separate(in, outDir)`, `Melody(vocals, out)` methods
-- [ ] Worker pool with bounded concurrency (env `MAX_CONCURRENT_JOBS=1`)
-- [ ] `POST /api/generate` { video_id, semitones } handler:
-  - Returns immediately with job_id
-  - Goroutine runs pipeline with smart caching: skip yt-dlp full / Demucs / CREPE / shift / transcode if cached
-- [ ] SSE `GET /api/status/:jobId` with queue_position
-- [ ] `GET /api/audio/:videoId/:semitones` — MP3 via http.ServeFile (Range support)
-- [ ] `GET /api/melody/:videoId/:semitones` — server transposes cached original melody by semitones
-- [ ] End-to-end test: cold generate (90-180s) → repeat (instant) → same video new semitones (5-15s)
+- [x] `ProcessorClient.Separate` + `.Melody` (round-tripper-tested HTTP wrappers); `YouTubeService.DownloadFull` (yt-dlp full song → `original.wav`).
+- [x] `services/job_runner.go` — semaphore-bounded concurrency (env `MAX_CONCURRENT_JOBS=1`), 4-stage pipeline with per-stage cache-skip, atomic JobStore status transitions; 9 stage-orchestration tests + bounded-concurrency test.
+- [x] `POST /api/generate` `{video_id, sig, semitones}` — validates, `JobRunner.Submit`, returns `{job_id}` (202).
+- [x] SSE `GET /api/status/:jobId` — polls JobStore every 300ms, emits `data: {"status","message"}` events, terminates on `done`/`error`/client-disconnect.
+- [x] `GET /api/audio/:videoId/:semitones?sig=` — `http.ServeContent` of `shifted/{n}/audio.mp3`; 404 on cache miss (no auto-generate).
+- [x] `GET /api/melody/:videoId/:semitones?sig=` — math-transposes cached `melody.json` server-side (`hz × 2^(n/12)`); voiced/unvoiced gate preserved since `0 × ratio = 0`. Adds `key` + `transposed_key` fields (see backend key-detection task at start of Group 8 below).
+- [x] Live smoke test through the full `/api/generate` flow: SSE progress runs through `downloading → separating → melody → shifting → done`, full instrumental serves clean at the user's chosen key.
+- [x] **Semitones bound widened ±5 → ±12** across handlers and tests — singers need beyond ±5 (e.g. Fake Plastic Trees A → D = −7). CLAUDE.md updated with reasoning.
 
 ## Group 8 — Vue Frontend (Search + Player)
-- [ ] Create Vue 3 project (`npm create vue@latest` — TypeScript, Router, Pinia)
-- [ ] Install: Tailwind CSS, **pitchy** (not pitchfinder)
-- [ ] Vite proxy config (`/api` → `localhost:8080`)
-- [ ] Typed API client (`services/api.ts`)
-- [ ] Pinia search store + `SearchView.vue` + `SearchBar.vue` + `SongCard.vue` (click → navigates to player)
-- [ ] Pinia player store + `PlayerView.vue`:
-  - On mount: fires `/api/preview/:videoId` → plays in original key
-  - KeySelector change: fires `/api/preview-shift` → audio reloads
-  - "Generate Full Song" button: fires `/api/generate` → progress → full audio plays
-- [ ] `KeySelector.vue` — semitone picker (-5 to +5)
-- [ ] `AudioPlayer.vue` — `<audio>` wrapper, src swaps between preview and full track
-- [ ] `ProcessingStatus.vue` — SSE progress for `/api/generate`
-- [ ] `useSSE.ts` with reconnect + polling fallback
-- [ ] "Start Singing" enabled only after `/api/generate` done (need melody.json)
+Reference: plan at `~/.claude/plans/compressed-baking-quasar.md`. UI direction approved: dark theme everywhere; homepage Google-style centered search; infinite-scroll results; player page mirrors Ultimate Guitar transpose pill `[ − Tr. n + ]` + separate "Key: A → G" line.
+
+### Backend pre-step (done as part of Group 8)
+- [x] **Python key detection** (`melody_service.py`): `estimate_key()` Krumhansl-Schmuckler on voiced-frame pitch-class histogram → adds `"key": "A major"` to `melody.json`. Empty string for all-unvoiced. 145 tests pass.
+- [x] **Go key transpose** (`api/handlers/melody.go`): `/api/melody` response now includes `key` (passthrough) + `transposed_key` (computed via note-wheel math, preserves major/minor). Internal `transposeKey()` + 12-case table-driven test.
+
+### Frontend
+- [ ] Scaffold Vue 3 + TS + Vue Router + Pinia + Tailwind CSS v4 (via `@tailwindcss/vite`). Vite proxy `/api` → `:8080`. Set page title "Cantus". Dark theme defaults (`#0f0d14` background). Strip scaffold demo content (HelloWorld, TheWelcome, counter store, etc.) leaving clean `App.vue` + empty placeholder views.
+- [ ] `services/api.ts` typed wrappers for all 7 endpoints (search, preview URL, previewShift Blob, generate, getMelody, audio URL, status SSE).
+- [ ] `composables/useSSE.ts` — EventSource wrapper, auto-close on `done`/`error`, cleanup on unmount.
+- [ ] `stores/search.ts` (query/results/hasMore/offset/loading/error + runSearch/loadMore) and `stores/player.ts` (videoId/sig/song/semitones/audioSrc/originalKey/transposedKey/jobId/jobStatus/melody + loadPreview/setSemitones/generateFullSong).
+- [ ] `SearchView.vue` + `SearchBar.vue` (input + submit) + `SongCard.vue` (thumb/title/artist/album/duration → routes to player). Infinite scroll via IntersectionObserver sentinel.
+- [ ] `PlayerView.vue` with UG-style layout: song header, `[▶ Play]` + transpose pill, `Key: A → G` line (hidden until melody loaded; short-form letter+m rendering), seek bar, "Generate Full Song" button → `ProcessingStatus.vue` SSE progress.
+- [ ] `KeySelector.vue` — rounded pill `[ − ] Tr. {n} [ + ]`, clamps ±12, emits change → player store fires `/api/preview-shift` + refetches `/api/melody`.
+- [ ] `AudioPlayer.vue` — `<audio>` wrapper. Source state machine: preview URL → blob URL (after preview-shift) → full audio URL (after generate done).
+- [ ] End-to-end smoke test: search "fake plastic trees" → click result → preview plays → drag pill to −7 → shifted preview + "Key: A → D" updates → "Generate Full Song" → SSE progress → full instrumental plays cleanly.
 
 ## Group 9 — Pitch Detection
-- [ ] `usePitchDetection.ts` composable — AudioWorklet + **pitchy (McLeod method)**
-- [ ] **Filter chain on raw pitch** (ported from prototype `audio_renderer.py::PitchDetector`):
-  - Target-proximity gate: reject detections >7 semitones from current target (music bleed defense).
-  - Octave-fold: if `|detected - target|` ∈ [9, 15], snap ±12 semitones toward target.
-  - Jump rejection: reject if change >8 semitones from last valid frame.
-  - 9-frame median smoothing on the user pitch series.
-  - 65-frame silence reset (~1.5 s at 23 ms/frame) — clear `last_valid` after silence.
-- [ ] Pinia pitch store (`stores/pitch.ts`)
-- [ ] `PitchMeter.vue` — current note name + cents off
-- [ ] `PitchDiagram.vue` — scrolling SVG, 10s window centered on `now`, color-coded user line: green ≤0.5 st, yellow ≤1.5 st, red >1.5 st, orange when singing-with-no-target.
-- [ ] Hit-rate score: `frames_where(|user - target| ≤ 1.5 st) / total_voiced_frames`, displayed live.
-- [ ] Y-axis as note names (C4, D4, …) — port `pitch_utils.midi_to_note_name` from the prototype.
-- [ ] Integrate melody.json: compare live pitch using **`audio.currentTime`** (not performance.now)
-- [ ] One-time headphones tooltip on mic permission prompt
-- [ ] End-to-end test: sing into mic, verify diagram + feedback
+- [x] `usePitchDetection.ts` composable — **AnalyserNode + rAF + pitchy (McLeod method)**. AudioWorklet was the original plan but reverted for v1: pitchy on the main thread at rAF is ~0.3 ms/call on M-series; worklet's cross-thread postMessage cost outweighs its jitter win at our 30 ms latency budget. Constraints: `echoCancellation/noiseSuppression/autoGainControl: false`, `latencyHint: 'interactive'`, `fftSize: 2048`, `smoothingTimeConstant: 0`. Injectable seams: `audioContextFactory`, `getUserMediaFn`, `filter` for tests.
+- [x] **Filter chain on raw pitch** — `utils/pitchFilter.ts`, 50 table-driven tests; ported from prototype `audio_renderer.py:71-113`. Split-output `step()` returns `{ filteredMidi, smoothedMidi }` so jump-rejection compares against post-gate (not post-median) values. Constants:
+  - `CONF_THRESHOLD=0.5`, `HZ_LOW=60`, `HZ_HIGH=1000`
+  - Target-proximity gate: reject when `diff > 7 AND |diff - 12| > 3` (conjunction — keeps fold candidates 9-15 alive).
+  - Octave-fold: if `diff ∈ [9, 15]`, fold raw ±12 toward target.
+  - **Jump rejection: `JUMP_SEMITONES = 24`** (matches prototype line 44; the "8" in the original Group 9 spec was stale).
+  - 9-frame nan-median smoothing.
+  - **Silence reset: `SILENCE_RESET_FRAMES = 94`** — scaled from prototype's 65 (at ~23 ms/frame) to preserve ~1.5 s semantics at ~16 ms/frame rAF cadence.
+- [x] Pinia pitch store (`stores/pitch.ts`) — `userTimes/userMidis` parallel arrays + `frameHits/frameTotal/currentMidi/isActive` + `hitRate` (null until `frameTotal > 30`). `trimSinceSeek(t)` does NOT reset hits/total (matches prototype `_seek`). 24 tests.
+- [ ] `PitchMeter.vue` — current note name + cents off. *(Deferred — `PitchDiagram` already conveys current pitch via the user-line trail + score; a standalone meter feels redundant in this UI. Can revisit if Group 9 smoke testing surfaces the need.)*
+- [x] `PitchDiagram.vue` — scrolling SVG, 10s window centered on `audio.currentTime`. Past target line blue `#1f77b4`, future gray `#aaaaaa`. User line color-coded: green ≤0.5 st, yellow ≤1.5 st, red >1.5 st, orange singing-with-no-target. Red center cursor. Hybrid render: SVG for axes+target, segment-per-pair for user line (sliced to visible window before render). `ResizeObserver` for responsive width.
+- [x] Hit-rate score: top-right of the diagram, rendered only when `hitRate !== null` (frameTotal > 30 gate).
+- [x] Y-axis as note names — `midiToNoteName` (port of `pitch_utils.midi_to_note_name`) on integer MIDI ticks from `[yMin, yMax] = [floor(minTargetMidi)-1, ceil(maxTargetMidi)+1]`.
+- [x] Integrated via `audio.currentTime` (not `performance.now`) — `AudioPlayer.vue` exposes its `<audio>` ref via `defineExpose({ audio })`; `PitchDiagram` reads `props.audioEl.currentTime` on every rAF tick. `seeked` (past tense; `seeking` fires repeatedly during scrub) wires to `pitchStore.trimSinceSeek`.
+- [x] One-time headphones tooltip — localStorage key `cantus_headphones_seen`; auto-hides after 6 s on first successful mic permission.
+- [ ] End-to-end test: sing into mic, verify diagram + feedback. *(Requires browser + mic — user-driven.)*
 
 ## Phase-2 / Public Launch Hardening (deferred — Cantus is currently single-user prototype scope)
 
@@ -150,3 +152,21 @@ Lets the user choose to hear the original vocalist as a guide track over the shi
 - [ ] **Serve endpoint**: `GET /api/vocals/:videoId/:semitones?sig=` mirroring `/api/audio/...` — same regex + sig + Storage + http.ServeContent pattern.
 - [ ] **Frontend mixing**: two `<audio>` elements (or Web Audio API gain nodes) playing in sync; vocal-volume slider controls the vocals gain. Lazy-load the vocals MP3 only when the toggle is enabled.
 - [ ] **UX**: small "🎤 vocal guide" toggle + volume slider in `PlayerView.vue`. Default OFF (matches the "I'm here to sing, not listen" intent).
+
+## Post-MVP Improvement Backlog
+Captured during MVP smoke-testing. Not blockers — ordered by user-chosen priority.
+
+### Priority 1 — Preview parity with full-song flow
+The current 30s preview shifts the *full mix* (vocals + instrumental) with pyrubberband, which produces audible artifacts on the vocals — the chipmunk/formant problem the full-song pipeline already avoids by shifting only the Demucs instrumental stem. Users naturally expect preview and full-song to sound the same; today they don't. Also missing on preview: the pitch diagram with the original-singer reference line.
+- [ ] **Instrumental-only preview**: run Demucs on the 30s clip, cache `vocals.mp3` + `no_vocals.mp3` under `preview-stems/`, then shift the `no_vocals` stem (mirroring the full-song path). Reusable cache layout: `tmp/cache/{videoID}/preview-stems/{vocals,no_vocals}.mp3` + `preview-stems/shifted/{n}.mp3`.
+  - Cost: Demucs adds ~12s cold on the 30s clip (vs 90-180s on the full song). Acceptable for preview if amortized via stem cache.
+  - Tradeoff to consider: keep the current fast-path (~1-2s shift on full mix) as a fallback for the very first preview, then progressively upgrade to the stems-based preview on subsequent shifts. Or just accept the longer first-preview cold time.
+- [ ] **Pitch detection on preview**: run the same CREPE-on-vocals pipeline on the 30s preview vocals stem so the preview also has a `melody.json`. Reuses the Group 6 service code unchanged; pure cache-layout work.
+- [ ] **PitchDiagram on PreviewView**: wire the same component into PreviewView with the 30s melody. The mic + diagram UX should feel identical preview→full so the user's expectation transfers cleanly between the two flows.
+
+### Priority 2 — Real-time lyrics (karaoke-style)
+- [ ] Lyrics source: investigate options — `lyricsgenius` (Genius API, requires token), `syrics` (Spotify time-synced), or `musixmatch` (paid). Time-synced (LRC format) is mandatory; plain lyrics aren't useful for a karaoke flow.
+- [ ] Caching: extend the per-`videoId` cache layout (e.g. `tmp/cache/{videoID}/lyrics.lrc`) with TTL aligned to the existing `CACHE_TTL_HOURS`. Lyrics are tiny, so this is essentially free storage.
+- [ ] Backend endpoint: `GET /api/lyrics/:videoId?sig=` returning the parsed LRC or `404` if unavailable (some songs won't have a time-synced source).
+- [ ] Frontend: a `LyricsPanel.vue` above or below the pitch diagram that highlights the active line (and ideally per-word position if the source supports it). Bind to `audio.currentTime` the same way `PitchDiagram` does.
+- [ ] UX gotcha: lyrics may be unavailable for some songs — design the empty state gracefully (hide the panel, don't show a broken header).

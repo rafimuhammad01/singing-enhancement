@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from services.melody_service import MelodyService
+from services.melody_service import MelodyService, estimate_key
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -82,7 +82,7 @@ def test_extract_happy_path_writes_compact_json(tmp_path: Path) -> None:
     data = json.loads(output.read_text())
 
     # Schema: exactly these top-level keys
-    assert set(data.keys()) == {"hop_ms", "min_hz", "max_hz", "frames"}
+    assert set(data.keys()) == {"hop_ms", "min_hz", "max_hz", "key", "frames"}
     assert data["hop_ms"] == STEP_SIZE_MS
 
     # frames: conf=0.2 → unvoiced (hz=0.0); conf=0.9 with freq=880 → voiced
@@ -173,6 +173,7 @@ def test_extract_idempotency_skips_when_output_valid(tmp_path: Path) -> None:
         "hop_ms": 50,
         "min_hz": 200.0,
         "max_hz": 600.0,
+        "key": "A major",
         "frames": [[0, 200.0], [50, 0.0]],
     }
     output.write_text(json.dumps(existing))
@@ -209,7 +210,7 @@ def test_extract_idempotency_overwrites_when_output_corrupted(tmp_path: Path) ->
     service.extract(str(vocals), str(output))
 
     data = json.loads(output.read_text())
-    assert set(data.keys()) == {"hop_ms", "min_hz", "max_hz", "frames"}
+    assert set(data.keys()) == {"hop_ms", "min_hz", "max_hz", "key", "frames"}
 
 
 def test_extract_idempotency_overwrites_when_schema_missing_keys(tmp_path: Path) -> None:
@@ -231,7 +232,7 @@ def test_extract_idempotency_overwrites_when_schema_missing_keys(tmp_path: Path)
     service.extract(str(vocals), str(output))
 
     data = json.loads(output.read_text())
-    assert set(data.keys()) == {"hop_ms", "min_hz", "max_hz", "frames"}
+    assert set(data.keys()) == {"hop_ms", "min_hz", "max_hz", "key", "frames"}
     assert len(data["frames"]) == 2
 
 
@@ -319,3 +320,126 @@ def test_extract_passes_sr_16000_to_loader(tmp_path: Path) -> None:
 
     assert recorded, "loader must have been called"
     assert recorded[0]["sr"] == 16000
+
+
+# ---------------------------------------------------------------------------
+# Key detection — pure function tests
+# ---------------------------------------------------------------------------
+
+# C major scale: C D E F G A B
+_C_MAJOR_HZ: list[float] = [261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88]
+# A minor scale: A B C D E F G
+# A and E (tonic + dominant) are repeated to stress the tonic so K-S tips
+# toward A minor rather than the relative major (C major).
+_A_MINOR_HZ: list[float] = [220.00, 246.94, 261.63, 293.66, 329.63, 349.23, 392.00]
+# Tonic-stressed version: A repeated twice per cycle to break the C/Am tie
+_A_MINOR_STRESSED: list[float] = [
+    220.00,
+    220.00,
+    246.94,
+    261.63,
+    293.66,
+    329.63,
+    329.63,
+    349.23,
+    392.00,
+]
+
+
+def test_estimate_key_pure_function_c_major() -> None:
+    """C major scale frequencies repeated several times → 'C major'."""
+    voiced = _C_MAJOR_HZ * 4  # repeat to reinforce histogram
+    assert estimate_key(voiced) == "C major"
+
+
+def test_estimate_key_pure_function_a_minor() -> None:
+    """A minor with stressed tonic/dominant → 'A minor' (not relative C major)."""
+    voiced = _A_MINOR_STRESSED * 4
+    assert estimate_key(voiced) == "A minor"
+
+
+def test_estimate_key_pure_function_empty() -> None:
+    """Empty frequency list → empty string."""
+    assert estimate_key([]) == ""
+
+
+def test_estimate_key_pure_function_single_note() -> None:
+    """Single pitch class — tie-break allowed; must return 'A major' or 'A minor'."""
+    result = estimate_key([440.0])
+    assert result in {"A major", "A minor"}
+
+
+# ---------------------------------------------------------------------------
+# Key detection — integration tests (extract writes key field)
+# ---------------------------------------------------------------------------
+
+
+def _c_major_predictor_data(n_repeats: int = 4) -> tuple[list[float], list[float], list[float]]:
+    """Build times/freqs/conf arrays cycling through C major pitches."""
+    freqs_cycle = _C_MAJOR_HZ * n_repeats
+    n = len(freqs_cycle)
+    times = [i * 0.05 for i in range(n)]
+    conf = [0.9] * n
+    return times, freqs_cycle, conf
+
+
+def test_extract_writes_key_field(tmp_path: Path) -> None:
+    """End-to-end: extract writes 'key' field alongside existing schema fields."""
+    vocals = tmp_path / "vocals.wav"
+    vocals.write_bytes(b"fake")
+    output = tmp_path / "melody.json"
+
+    # 1s of synthetic audio at amplitude 0.05 → RMS exceeds energy gate (0.015)
+    audio = np.ones(16000, dtype=np.float32) * 0.05
+
+    times, freqs, conf = _c_major_predictor_data()
+
+    service = MelodyService(
+        predictor=make_fake_predictor(times, freqs, conf),
+        loader=make_fake_loader(audio),
+    )
+    service.extract(str(vocals), str(output))
+
+    data = json.loads(output.read_text())
+    assert data["key"] == "C major"
+
+
+def test_extract_empty_key_when_all_unvoiced(tmp_path: Path) -> None:
+    """All frames unvoiced → key field is empty string."""
+    vocals = tmp_path / "vocals.wav"
+    vocals.write_bytes(b"fake")
+    output = tmp_path / "melody.json"
+
+    audio = _voiced_audio(4000)
+    times = [0.0, 0.05, 0.10]
+    freqs = [440.0, 329.63, 261.63]
+    conf = [0.1, 0.1, 0.1]  # all below CONF_THRESHOLD → unvoiced
+
+    service = MelodyService(
+        predictor=make_fake_predictor(times, freqs, conf),
+        loader=make_fake_loader(audio),
+    )
+    service.extract(str(vocals), str(output))
+
+    data = json.loads(output.read_text())
+    assert data["key"] == ""
+
+
+def test_extract_key_field_present_in_output_schema(tmp_path: Path) -> None:
+    """Spot-check: key is present alongside hop_ms, min_hz, max_hz, frames."""
+    vocals = tmp_path / "vocals.wav"
+    vocals.write_bytes(b"fake")
+    output = tmp_path / "melody.json"
+
+    audio = np.ones(16000, dtype=np.float32) * 0.05
+    times, freqs, conf = _c_major_predictor_data()
+
+    service = MelodyService(
+        predictor=make_fake_predictor(times, freqs, conf),
+        loader=make_fake_loader(audio),
+    )
+    service.extract(str(vocals), str(output))
+
+    data = json.loads(output.read_text())
+    for field in ("hop_ms", "min_hz", "max_hz", "frames", "key"):
+        assert field in data, f"missing field: {field}"

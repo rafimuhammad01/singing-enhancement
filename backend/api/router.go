@@ -28,6 +28,7 @@ func NewRouter(allowedOrigins []string, log zerolog.Logger, svc services.YouTube
 	mux.Get("/health", handlers.Health)
 	mux.Get("/api/songs/search", handlers.Search(svc))
 	mux.Get("/api/preview/{videoId}", handlers.Preview(signer, storage, svc))
+	mux.Get("/api/preview-key/{videoId}", handlers.PreviewKey(signer, storage, svc, processor))
 	mux.Post("/api/preview-shift", handlers.PreviewShift(signer, storage, svc, processor))
 	mux.Get("/api/audio/{videoId}/{semitones}", handlers.Audio(signer, storage))
 	mux.Get("/api/melody/{videoId}/{semitones}", handlers.Melody(signer, storage))

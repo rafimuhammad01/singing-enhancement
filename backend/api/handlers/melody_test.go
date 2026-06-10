@@ -58,19 +58,23 @@ func stageMelody(t *testing.T, storage *services.LocalDiskStorage, videoID strin
 }
 
 // testMelodyPayload is the canonical small fixture for melody tests.
+// key is "A major" so key-transposition assertions can be added per test case.
 var testMelodyPayload = []byte(`{
 	"hop_ms": 50,
 	"min_hz": 220.0,
 	"max_hz": 440.0,
+	"key": "A major",
 	"frames": [[0, 220.0], [50, 0.0], [100, 440.0], [150, 0.0]]
 }`)
 
 // melodyResponse mirrors the shape returned by the Melody handler.
 type melodyResponse struct {
-	HopMs  int          `json:"hop_ms"`
-	MinHz  float64      `json:"min_hz"`
-	MaxHz  float64      `json:"max_hz"`
-	Frames [][2]float64 `json:"frames"`
+	HopMs         int          `json:"hop_ms"`
+	MinHz         float64      `json:"min_hz"`
+	MaxHz         float64      `json:"max_hz"`
+	Key           string       `json:"key"`
+	TransposedKey string       `json:"transposed_key"`
+	Frames        [][2]float64 `json:"frames"`
 }
 
 func TestMelodyHandler(t *testing.T) {
@@ -120,6 +124,12 @@ func TestMelodyHandler(t *testing.T) {
 				if got.Frames[3][1] != 0.0 {
 					t.Errorf("frames[3][1] (unvoiced): got %f, want exactly 0.0", got.Frames[3][1])
 				}
+				if got.Key != "A major" {
+					t.Errorf("key: got %q, want %q", got.Key, "A major")
+				}
+				if got.TransposedKey != "A major" {
+					t.Errorf("transposed_key: got %q, want %q", got.TransposedKey, "A major")
+				}
 			},
 		},
 		{
@@ -150,6 +160,13 @@ func TestMelodyHandler(t *testing.T) {
 				if got.Frames[3][1] != 0.0 {
 					t.Errorf("frames[3][1] (unvoiced): got %f, want exactly 0.0", got.Frames[3][1])
 				}
+				// A major + 5 = D major (A=9, 9+5=14, 14%12=2, noteNames[2]="D")
+				if got.Key != "A major" {
+					t.Errorf("key: got %q, want %q", got.Key, "A major")
+				}
+				if got.TransposedKey != "D major" {
+					t.Errorf("transposed_key: got %q, want %q", got.TransposedKey, "D major")
+				}
 			},
 		},
 		{
@@ -179,6 +196,148 @@ func TestMelodyHandler(t *testing.T) {
 				}
 				if got.Frames[3][1] != 0.0 {
 					t.Errorf("frames[3][1] (unvoiced): got %f, want exactly 0.0", got.Frames[3][1])
+				}
+				// A major - 2 = G major
+				if got.Key != "A major" {
+					t.Errorf("key: got %q, want %q", got.Key, "A major")
+				}
+				if got.TransposedKey != "G major" {
+					t.Errorf("transposed_key: got %q, want %q", got.TransposedKey, "G major")
+				}
+			},
+		},
+		{
+			name: "happy path semitones=-7 A minor → D minor (Fake Plastic Trees case)",
+			url:  "/api/melody/" + validID + "/-7?sig=" + validSig,
+			setup: func(t *testing.T, st *services.LocalDiskStorage) {
+				payload := []byte(`{
+					"hop_ms": 50,
+					"min_hz": 220.0,
+					"max_hz": 440.0,
+					"key": "A minor",
+					"frames": [[0, 220.0], [50, 0.0]]
+				}`)
+				stageMelody(t, st, validID, payload)
+			},
+			wantStatus: http.StatusOK,
+			checkBody: func(t *testing.T, got melodyResponse) {
+				t.Helper()
+				if got.Key != "A minor" {
+					t.Errorf("key: got %q, want %q", got.Key, "A minor")
+				}
+				if got.TransposedKey != "D minor" {
+					t.Errorf("transposed_key: got %q, want %q", got.TransposedKey, "D minor")
+				}
+			},
+		},
+		{
+			name: "happy path C major +5 → F major",
+			url:  "/api/melody/" + validID + "/5?sig=" + validSig,
+			setup: func(t *testing.T, st *services.LocalDiskStorage) {
+				payload := []byte(`{
+					"hop_ms": 50,
+					"min_hz": 220.0,
+					"max_hz": 440.0,
+					"key": "C major",
+					"frames": [[0, 220.0], [50, 0.0]]
+				}`)
+				stageMelody(t, st, validID, payload)
+			},
+			wantStatus: http.StatusOK,
+			checkBody: func(t *testing.T, got melodyResponse) {
+				t.Helper()
+				if got.Key != "C major" {
+					t.Errorf("key: got %q, want %q", got.Key, "C major")
+				}
+				if got.TransposedKey != "F major" {
+					t.Errorf("transposed_key: got %q, want %q", got.TransposedKey, "F major")
+				}
+			},
+		},
+		{
+			name: "happy path empty key passes through unchanged",
+			url:  "/api/melody/" + validID + "/3?sig=" + validSig,
+			setup: func(t *testing.T, st *services.LocalDiskStorage) {
+				payload := []byte(`{
+					"hop_ms": 50,
+					"min_hz": 220.0,
+					"max_hz": 440.0,
+					"key": "",
+					"frames": [[0, 0.0], [50, 0.0]]
+				}`)
+				stageMelody(t, st, validID, payload)
+			},
+			wantStatus: http.StatusOK,
+			checkBody: func(t *testing.T, got melodyResponse) {
+				t.Helper()
+				if got.Key != "" {
+					t.Errorf("key: got %q, want empty", got.Key)
+				}
+				if got.TransposedKey != "" {
+					t.Errorf("transposed_key: got %q, want empty", got.TransposedKey)
+				}
+			},
+		},
+		{
+			name: "preview-key.json overrides melody.json key (single source of truth)",
+			url:  "/api/melody/" + validID + "/-2?sig=" + validSig,
+			setup: func(t *testing.T, st *services.LocalDiskStorage) {
+				// melody.json says "A minor" (Krumhansl on isolated vocals)
+				melodyPayload := []byte(`{
+					"hop_ms": 50,
+					"min_hz": 220.0,
+					"max_hz": 440.0,
+					"key": "A minor",
+					"frames": [[0, 220.0]]
+				}`)
+				stageMelody(t, st, validID, melodyPayload)
+				// preview-key.json says "F major" (chroma on full mix) — must win.
+				previewKeyPayload := []byte(`{"key":"F major"}`)
+				tmp := filepath.Join(t.TempDir(), "preview-key.json")
+				if err := os.WriteFile(tmp, previewKeyPayload, 0o644); err != nil {
+					t.Fatalf("write preview-key tmp: %v", err)
+				}
+				if err := st.Commit(context.Background(), validID, "preview-key.json", tmp); err != nil {
+					t.Fatalf("commit preview-key: %v", err)
+				}
+			},
+			wantStatus: http.StatusOK,
+			checkBody: func(t *testing.T, got melodyResponse) {
+				t.Helper()
+				if got.Key != "F major" {
+					t.Errorf("key: got %q, want %q (preview-key should override)", got.Key, "F major")
+				}
+				// F major − 2 = D# major (F=5, 5-2=3, noteNames[3]="D#")
+				if got.TransposedKey != "D# major" {
+					t.Errorf("transposed_key: got %q, want %q", got.TransposedKey, "D# major")
+				}
+			},
+		},
+		{
+			name: "preview-key.json with empty key falls through to melody.json",
+			url:  "/api/melody/" + validID + "/0?sig=" + validSig,
+			setup: func(t *testing.T, st *services.LocalDiskStorage) {
+				melodyPayload := []byte(`{
+					"hop_ms": 50,
+					"min_hz": 220.0,
+					"max_hz": 440.0,
+					"key": "A minor",
+					"frames": [[0, 220.0]]
+				}`)
+				stageMelody(t, st, validID, melodyPayload)
+				tmp := filepath.Join(t.TempDir(), "preview-key.json")
+				if err := os.WriteFile(tmp, []byte(`{"key":""}`), 0o644); err != nil {
+					t.Fatalf("write preview-key tmp: %v", err)
+				}
+				if err := st.Commit(context.Background(), validID, "preview-key.json", tmp); err != nil {
+					t.Fatalf("commit preview-key: %v", err)
+				}
+			},
+			wantStatus: http.StatusOK,
+			checkBody: func(t *testing.T, got melodyResponse) {
+				t.Helper()
+				if got.Key != "A minor" {
+					t.Errorf("key: got %q, want %q (should fall through to melody.json)", got.Key, "A minor")
 				}
 			},
 		},

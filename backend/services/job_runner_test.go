@@ -85,6 +85,8 @@ func (f *fakeProcessorJob) Shift(_ context.Context, inputPath, outputPath string
 	return f.shiftErr
 }
 
+func (f *fakeProcessorJob) PreviewKey(_ context.Context, _ string) (string, error) { return "", nil }
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
